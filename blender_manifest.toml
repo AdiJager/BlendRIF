@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "avp_rif_importer"
+version = "1.0.0"
+name = "Aliens vs Predator RIF Importer"
+tagline = "Import AvP (1999) RIF assets: models, levels, textures, rigs"
+maintainer = "AdiJager"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+website = "https://github.com/AdiJager/BlendRIF"
+tracker = "https://github.com/AdiJager/BlendRIF/issues"
+
+tags = ["Import-Export"]
+
+[permissions]
+files = "Read .RIF assets and write extracted FFL texture PNGs."

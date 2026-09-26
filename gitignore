@@ -1,0 +1,28 @@
+# Distribution archives (built by build_zip.py, attached to Releases)
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Blender
+*.blend1
+*.blend2
+*.blend[0-9]
+
+# Diagnostic dumps written by tools/ scripts
+dump_*.txt
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp

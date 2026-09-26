@@ -1,0 +1,6 @@
+Copy & Paste bellow code into Blender script. Update path with your own.
+
+import sys
+sys.path.insert(0, r"C:\Users\USER\AppData\Roaming\Blender Foundation\Blender\#.#\scripts\addons")
+from avp_rif_importer.tests import run_all
+run_all()
