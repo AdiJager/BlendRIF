@@ -40,6 +40,7 @@ def apply_preset(self, context):
         self.import_avpstart = True
         self.import_camorign = True
         self.import_paths = True
+        self.import_waypoints = False
         self.import_lights = True
         self.import_materials = True
         self.apply_matchimg = True
@@ -62,6 +63,7 @@ def apply_preset(self, context):
         self.import_avpstart = False
         self.import_camorign = False
         self.import_paths = False
+        self.import_waypoints = False
         self.import_lights = False
         self.import_materials = False
         self.apply_matchimg = False
@@ -84,6 +86,7 @@ def apply_preset(self, context):
         self.import_avpstart = True
         self.import_camorign = True
         self.import_paths = True
+        self.import_waypoints = False
         self.import_lights = True
         self.import_materials = True
         self.apply_matchimg = False

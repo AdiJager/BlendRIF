@@ -95,6 +95,9 @@ class ImportContext:
     rif_index: dict
     ext_cache: dict
     ext_stats: dict
+    # Texture resolution counters (textures.TextureStats), shared by every
+    # shape of the import; None disables counting.
+    tex_stats: object | None = None
     pivot_mode: PivotMode = PivotMode.ROTATED_ONLY
     ext_strategy: ExtRifStrategy = ExtRifStrategy.AUTO
     use_rotation: bool = True
@@ -462,7 +465,8 @@ def process_shape(shape: ShapeGroup, obj: ObjHead | None, idx: int,
         level_hint=ctx.level_hint,
         mat_timing=mat_t,
         import_materials=ctx.import_materials,
-        cull_backfaces=ctx.cull_backfaces)
+        cull_backfaces=ctx.cull_backfaces,
+        tex_stats=ctx.tex_stats)
     if timings is not None:
         elapsed = time.perf_counter() - t0
         mat_elapsed = mat_t[0]

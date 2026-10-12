@@ -49,6 +49,7 @@ from .materials import build_matchimg_index
 from .parsers.bitmaps import parse_bitmap_list, parse_matchimg, parse_clrlookp
 from .parsers.shapes import parse_shphead1, parse_objhead1
 from .parsers.markers import parse_plachidt
+from .parsers.waypoints import parse_waypoint, split_alien_waypoints
 from .parsers.char_anim import (
     parse_objchier_tree, CharBone, ObjAllSequences,
 )
@@ -91,6 +92,22 @@ def _find_level_name(decoded: bytes, resync_max: int) -> str | None:
 
 
 @dataclass
+class ModuleWaypointGroup:
+    """Alien waypoints of one AI module, with the module they belong to.
+
+    One group is produced per module that stores a WAYPOINT chunk; the
+    ground volumes the game records after the Alien ones are parsed but
+    not imported (AVPPATH2 patrol paths replaced them before release),
+    so `alien` holds the leading run and `n_ground` counts the rest.
+    """
+    module_index: int = -1               # OBJHEAD1 index_num of the module
+    module_tag: str = ""                 # OBJHEAD1 name of the module
+    alien: list = field(default_factory=list)    # list[Waypoint]
+    n_ground: int = 0                    # ground volumes skipped
+    n_total: int = 0                     # volumes in the chunk
+
+
+@dataclass
 class ScanResult:
     """Everything the importer reads from a decoded RIF before bpy is touched."""
     level_name: str = "Unknown"
@@ -114,6 +131,10 @@ class ScanResult:
     pstart_list: list = field(default_factory=list)
     camorign_list: list = field(default_factory=list)
     path_list: list = field(default_factory=list)
+    # Alien navigation volumes, one entry per module that has them.
+    # Parsed during the scan so Stage 3 and the log summary share one
+    # parse (see parsers/waypoints.py).
+    waypoint_groups: list = field(default_factory=list)  # list[ModuleWaypointGroup]
     lightset_list: list = field(default_factory=list)
     # Level track system (doors / lifts / rotating fans / platforms).
     # Raw payloads as returned by find_all_chunks; parsing lives in
@@ -162,6 +183,7 @@ class RifScanner:
         self._scan_shapes(decoded, scan, rm)
         self._scan_markers(decoded, scan, rm)
         self._scan_specials(decoded, scan, rm)
+        self._scan_waypoints(decoded, scan, rm)
         self._scan_tracks(decoded, scan, rm)
         self._scan_char_hierarchy(decoded, scan, rm)
         self._log_scan_summary(scan)
@@ -289,6 +311,81 @@ class RifScanner:
                  f"CAMORIGN: {len(scan.camorign_list)}, "
                  f"AVPPATH2: {len(scan.path_list)}")
 
+    def _scan_waypoints(self, decoded, scan, resync_max):
+        """Collect the Alien WAYPOINT chunk of every AI module.
+
+        WAYPOINT sits inside a module's MODULEDT chunk, one level below
+        the RBOBJECT that carries the module's OBJHEAD1, so the module
+        identity is carried down the recursion: the walk stops at the
+        MODULEDT level, where OBJHEAD1 is no longer a sibling.
+
+        Only the volumes the game uses for Alien navigation are kept,
+        i.e. everything before WaypointFlag_FirstGroundWaypoint; the
+        ground volumes in the same chunk were replaced by AVPPATH2
+        patrol paths during development. The payloads are parsed here so
+        Stage 3 and the log summary share a single parse.
+        """
+        n_failed = [0]
+
+        def _payload(chunks: list, cid: str) -> bytes | None:
+            """Return the single payload for cid, or None if absent/duplicated."""
+            found = [cdata for c, cdata in chunks if c == cid]
+            if len(found) != 1:
+                return None
+            return found[0]
+
+        def _collect(payload: bytes, module_index: int, module_tag: str) -> None:
+            """Parse one WAYPOINT payload and keep its Alien volumes."""
+            parsed = parse_waypoint(payload)
+            if parsed is None:
+                n_failed[0] += 1
+                return
+            alien = split_alien_waypoints(parsed)
+            scan.waypoint_groups.append(ModuleWaypointGroup(
+                module_index=module_index, module_tag=module_tag,
+                alien=alien, n_ground=len(parsed.waypoints) - len(alien),
+                n_total=len(parsed.waypoints)))
+
+        def _descend(blob: bytes, cur_idx: int, cur_tag: str, depth: int) -> None:
+            if depth > 12:
+                return
+            chunks = parse_chunks(blob, quiet=True, resync_max=resync_max)
+            if chunks is None:
+                return
+            ids = {c[0] for c in chunks}
+            if Chunk.WAYPOINT in ids:
+                # Landed on the MODULEDT payload: OBJHEAD1 is not a
+                # sibling here, so the module identity collected above
+                # is the only way to label these volumes.
+                payload = _payload(chunks, Chunk.WAYPOINT)
+                if payload:
+                    _collect(payload, cur_idx, cur_tag)
+                return
+            if Chunk.OBJHEAD1 in ids:
+                # Landed on the RBOBJECT: read the module identity and
+                # descend into its MODULEDT child for the WAYPOINT.
+                head = _payload(chunks, Chunk.OBJHEAD1)
+                oh = parse_objhead1(head) if head else None
+                idx, tag = (oh.index_num, oh.tag) if oh else (-1, "")
+                for cid, cdata in chunks:
+                    if cid == Chunk.MODULEDT:
+                        _descend(cdata, idx, tag, depth + 1)
+                return
+            for _, cdata in chunks:
+                _descend(cdata, cur_idx, cur_tag, depth + 1)
+
+        _descend(decoded, -1, "", 0)
+
+        n_modules = len(scan.waypoint_groups)
+        n_alien = sum(len(g.alien) for g in scan.waypoint_groups)
+        n_ground = sum(g.n_ground for g in scan.waypoint_groups)
+        log.info(f"WAYPOINT: {n_modules} module(s) with AI navigation data, "
+                 f"{n_alien} Alien volume(s)")
+        if n_ground or n_failed[0]:
+            log.info(f"  skipped: {n_ground} ground volume(s)"
+                     + (f", {n_failed[0]} unparsable chunk(s)"
+                        if n_failed[0] else ""))
+
     def _scan_tracks(self, decoded, scan, resync_max):
         """Collect LIGHTSET and OBJTRAK2 chunk payloads."""
         # OBJTRAK2 is the level-track system (doors, rotators, lifts,
@@ -358,6 +455,10 @@ class RifScanner:
         log.info(f"  Bitmaps:   {len(scan.bmp_names)}")
         if scan.objtrak_list:
             log.info(f"  Tracks:    {len(scan.objtrak_list)} OBJTRAK2")
+        if scan.waypoint_groups:
+            n_vol = sum(len(g.alien) for g in scan.waypoint_groups)
+            log.info(f"  Waypoints: {n_vol} Alien volume(s) in "
+                     f"{len(scan.waypoint_groups)} module(s)")
         if scan.char_bones:
             log.info(f"  Char:      bones={len(scan.char_bones)}  "
                      f"anim_sets={len(scan.char_anims)}  "

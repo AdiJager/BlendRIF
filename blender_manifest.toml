@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "avp_rif_importer"
-version = "1.0.0"
+version = "1.2.0"
 name = "Aliens vs Predator RIF Importer"
 tagline = "Import AvP (1999) RIF assets: models, levels, textures, rigs"
 maintainer = "AdiJager"
@@ -10,10 +10,29 @@ type = "add-on"
 blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
+# Only the fields documented for a manifest belong here: `website` is the
+# single URL field Blender accepts, and unknown keys are ignored by the
+# build/validate tooling (so a typo would silently do nothing).
 website = "https://github.com/AdiJager/BlendRIF"
-tracker = "https://github.com/AdiJager/BlendRIF/issues"
 
 tags = ["Import-Export"]
 
+# Packaging: keep the shipped package to the files the add-on needs at
+# run time. docs/ holds the README screenshots, tests/ is dev-only and
+# tools/ holds standalone dump scripts that are never imported by the
+# add-on; all three ship with the legacy ZIP instead. The patterns
+# below repeat Blender's defaults because declaring a list replaces
+# them instead of extending them.
+[build]
+paths_exclude_pattern = [
+    "__pycache__/",
+    ".*",
+    "/*.zip",
+    "*.blend[1-9]",
+    "docs/",
+    "tests/",
+    "tools/",
+]
+
 [permissions]
-files = "Read .RIF assets and write extracted FFL texture PNGs."
+files = "Read .RIF assets and write extracted FFL texture PNGs"

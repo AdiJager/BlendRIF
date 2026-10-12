@@ -14,7 +14,32 @@ from __future__ import annotations
 import math
 
 from .config import MAT_ROUGHNESS, MAT_SPECULAR
+from .textures import TextureStats
 from .utils import log
+
+
+def report_textures(tex_stats, import_materials: bool) -> None:
+    """Log how the bitmaps of this import resolved to texture files.
+
+    Prints the counters kept by textures.TextureStats plus a few examples
+    of ambiguous and missing lookups, so a wrong or absent texture can be
+    traced without re-running the import in diagnostics mode.
+    """
+    if not import_materials or not isinstance(tex_stats, TextureStats):
+        return
+    if tex_stats.lookups == 0:
+        log.info("  Textures:             (no bitmap references)")
+        return
+    pct = 100.0 * tex_stats.exact / tex_stats.lookups
+    log.info(f"  Textures:             {tex_stats.lookups} reference(s), "
+             f"{tex_stats.exact} by path ({pct:.1f}%), "
+             f"{tex_stats.by_name_unique} by unique name, "
+             f"{tex_stats.ambiguous} ambiguous, "
+             f"{tex_stats.missing} missing")
+    for ex in tex_stats.ambiguous_examples:
+        log.info(f"    ambiguous: {ex}")
+    for ex in tex_stats.missing_examples:
+        log.info(f"    missing:   {ex}")
 
 
 def print_summary(op, scan, state, counters, ctx):
@@ -58,6 +83,7 @@ def print_summary(op, scan, state, counters, ctx):
     log.info(f"  PLACHIDT:             {scan.n_plach_hit}")
     log.info(f"  Import Materials:     "
              f"{'ON' if op.import_materials else 'OFF'}")
+    report_textures(state.get("tex_stats"), op.import_materials)
     log.info(f"  Backface Culling:     "
              f"{'ON' if op.cull_backfaces else 'OFF'}")
     log.info(f"  Materials:            roughness={MAT_ROUGHNESS}, "
@@ -66,6 +92,12 @@ def print_summary(op, scan, state, counters, ctx):
              + (f" ({counters.smooth} meshes, {smooth_deg:.1f} deg)"
                 if op.auto_smooth else ""))
     log.info(f"  Lights:               {counters.lights}")
+    if op.import_waypoints:
+        n_ground = sum(g.n_ground for g in scan.waypoint_groups)
+        log.info(f"  Waypoints (Alien):    {counters.waypoints} "
+                 f"in {len(scan.waypoint_groups)} module(s)"
+                 + (f"  [{n_ground} ground volume(s) skipped]"
+                    if n_ground else ""))
     log.info(f"  Markers:              dum={counters.dum}, ph={counters.ph}, "
              f"gen={counters.gen}, snd={counters.snd}, "
              f"ps={counters.ps}, cam={counters.cam}, "

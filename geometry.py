@@ -23,7 +23,8 @@ from .config import (
     CLRLOOKP_MAX,
 )
 from .utils import log
-from .materials import get_material, find_tex, apply_matchimg_index
+from .materials import get_material, apply_matchimg_rule
+from .textures import resolve_texture, material_name
 
 
 # Precompiled struct parsers - 20-30% faster than unpack_from per call.
@@ -127,7 +128,8 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
                level_hint: str = "",
                mat_timing: list | None = None,
                import_materials: bool = True,
-               cull_backfaces: bool = True):
+               cull_backfaces: bool = True,
+               tex_stats=None):
     """Build a Blender mesh from a ShapeGroup; returns (mesh, mats, loc) or None."""
     if mat_timing is not None:
         mat_timing[0] = 0.0
@@ -167,11 +169,15 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
             tex_base = entry.name if entry is not None else None
             tex_raw = entry.raw_name if entry is not None else ""
             if tex_base:
-                tex_base = apply_matchimg_index(tex_base, matchimg_index)
+                # MATCHIMG may redirect this bitmap to another image; when
+                # it does, its own path is authoritative (the engine uses
+                # the rule's descriptor verbatim).
+                sub = apply_matchimg_rule(tex_base, tex_raw, matchimg_index)
+                if sub is not None:
+                    tex_base, tex_raw = sub
 
-            png = find_tex(tex_index, tex_base, tex_raw, level_hint) \
-                if tex_base else None
-
+            # Resolution runs for every polygon (a dict lookup) but the
+            # stats behind it count each bitmap once per import.
             # Untextured polygons get a CLRLOOKP debug tint, if available.
             debug_color = None
             if not tex_base and clrlookp_table:
@@ -182,8 +188,18 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
                                    ((ci >> 5) & 0x1F) / CLRLOOKP_MAX,
                                    ((ci >> 10) & 0x1F) / CLRLOOKP_MAX, 1.0)
 
-            mat_name = (f"{base}_{tex_base}" if tex_base
-                        else f"{base}_unknown_{bmp_idx}")
+            res = (resolve_texture(tex_index, tex_base, tex_raw, level_hint,
+                                   tex_stats)
+                   if tex_base else None)
+            png = res.png if res else None
+
+            # Material identity comes from the texture's path, so two
+            # textures sharing a file name never share a material.
+            if res and res.source_path:
+                mat_name = material_name(base, res.source_path, tex_base or "")
+            else:
+                mat_name = (f"{base}_{tex_base}" if tex_base
+                            else f"{base}_unknown_{bmp_idx}")
             if mat_name not in mat_lookup:
                 if mat_timing is not None:
                     _t_mat = time.perf_counter()
@@ -194,7 +210,8 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
                 else:
                     m = get_material(mat_name, png, mat_cache,
                                      raw_name=tex_raw, level_hint=level_hint,
-                                     cull_backfaces=cull_backfaces)
+                                     cull_backfaces=cull_backfaces,
+                                     tex_path=res.source_path if res else "")
                 if mat_timing is not None:
                     mat_timing[0] += time.perf_counter() - _t_mat
                 mat_lookup[mat_name] = len(mat_names)

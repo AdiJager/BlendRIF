@@ -21,7 +21,7 @@ from mathutils import Quaternion
 
 from .chunk_ids import Chunk
 from .chunks import parse_chunks
-from .utils import _safe_name, apply_axis, world_pos
+from .utils import _safe_name, apply_axis, world_pos, sanitize
 from .props import (
     AVP_PROP_TYPE, AVP_PROP_NAME, AVP_PROP_TEXT,
     AVP_PROP_BBOX_MIN, AVP_PROP_BBOX_MAX,
@@ -31,15 +31,20 @@ from .props import (
     AVP_PROP_INNER_RANGE, AVP_PROP_OUTER_RANGE,
     AVP_PROP_MAX_VOLUME, AVP_PROP_PITCH, AVP_PROP_PROBABILITY,
     AVP_PROP_MODULE_ID, AVP_PROP_NUM_POINTS,
+    AVP_PROP_MODULE_INDEX, AVP_PROP_POINT_FLAGS,
     AVP_PROP_BRIGHTNESS, AVP_PROP_SPREAD, AVP_PROP_RANGE,
+    AVP_PROP_WP_MODULE_INDEX, AVP_PROP_WP_INDEX, AVP_PROP_WP_CENTRE,
+    AVP_PROP_WP_MIN_EXTENTS, AVP_PROP_WP_MAX_EXTENTS,
+    AVP_PROP_WP_LINK_INDICES, AVP_PROP_WP_LINK_FLAGS,
     AVP_TYPE_DUMMY, AVP_TYPE_HIERARCHY, AVP_TYPE_GENERATOR,
     AVP_TYPE_SOUND, AVP_TYPE_PLAYER_START, AVP_TYPE_CAMERA_ORIGIN,
-    AVP_TYPE_PATH, AVP_TYPE_LIGHT,
+    AVP_TYPE_PATH, AVP_TYPE_LIGHT, AVP_TYPE_WAYPOINT,
 )
 from .parsers.markers import (
     parse_dumobjdt, parse_dumobjtx, parse_plachidt,
     parse_avpgener, parse_soundob2, parse_avpstart,
     parse_camorign, parse_avppath2,
+    PATH_FLAG_LOOP, PATH_FLAG_BACK_AND_FORTH,
 )
 from .parsers.lights import parse_stdlight
 
@@ -221,33 +226,110 @@ def create_camorign_empties(cams, base, scale, collection) -> int:
     return n
 
 
-def create_path_curves(paths, base, scale, collection) -> int:
-    """Create one poly-curve object per AVPPATH2 record; returns the count."""
+def create_path_curves(paths, base, scale, collection, obj_by_index=None) -> int:
+    """Create one poly-curve object per AVPPATH2 record; returns the count.
+
+    A patrol path is a list of *modules*, not of coordinates: every
+    point carries a `module_index` and the game walks the path by moving
+    from one module to the next (`modules_in_path` in Projload.cpp /
+    bh_ais.c), using each module's world position. The point's own
+    location field is zero in all 1098 retail points, so the curve is
+    built from the module origins resolved through OBJHEAD1.
+
+    Objects whose module cannot be resolved are skipped; the object
+    properties keep the module index, the point flags and the path
+    flags so the original record can still be inspected.
+    """
     n = 0
+    by_index = obj_by_index or {}
     for p_data in paths:
         p = parse_avppath2(p_data)
         if not p or not p.points:
+            continue
+        located = []
+        for pt in p.points:
+            oh = by_index.get(pt.module)
+            if oh is not None:
+                located.append((pt, oh))
+        if not located:
+            log.info(f"    [PATH] '{p.name}' skipped: none of its "
+                     f"{len(p.points)} module(s) resolved to an OBJHEAD1")
             continue
         obj_name = _safe_name(base, "path", p.name, n)
         curve_data = bpy.data.curves.new(obj_name, 'CURVE')
         curve_data.dimensions = '3D'
         spline = curve_data.splines.new('POLY')
-        spline.points.add(len(p.points) - 1)
-        for i, pt in enumerate(p.points):
-            vx, vy, vz = world_pos(pt.loc, scale)
+        spline.points.add(len(located) - 1)
+        for i, (pt, oh) in enumerate(located):
+            vx, vy, vz = world_pos(oh.pos, scale)
             spline.points[i].co = (vx, vy, vz, 1.0)
-        if p.flags & 0x01:
-            curve_data.use_cyclic_u = True
+        # PathFlag_LoopPath: the game loops straight back to module 0.
+        # use_cyclic_u lives on the spline, not on the curve datablock.
+        if p.flags & PATH_FLAG_LOOP:
+            spline.use_cyclic_u = True
         curve_data.bevel_depth = 0.5 * scale if scale > 0 else 0.5
         obj = bpy.data.objects.new(obj_name, curve_data)
+        modules = ",".join(str(pt.module) for pt, _ in located)
+        flags = ",".join(str(pt.flags) for pt, _ in located)
         _apply_props(obj, {
-            AVP_PROP_TYPE:       AVP_TYPE_PATH,
-            AVP_PROP_NAME:       p.name,
-            AVP_PROP_ID:         p.id,
-            AVP_PROP_NUM_POINTS: len(p.points),
+            AVP_PROP_TYPE:        AVP_TYPE_PATH,
+            AVP_PROP_NAME:        p.name,
+            AVP_PROP_ID:          p.id,
+            AVP_PROP_FLAGS:       p.flags,
+            AVP_PROP_NUM_POINTS:  len(located),
+            AVP_PROP_MODULE_INDEX: modules,
+            AVP_PROP_POINT_FLAGS: flags,
         })
         collection.objects.link(obj)
         n += 1
+    return n
+
+
+def create_waypoint_objects(groups, base, scale, collection) -> int:
+    """Create one cube empty per Alien navigation volume; returns the count.
+
+    A waypoint volume is an axis-aligned box: `min`/`max` are its world
+    corners and `centre` their midpoint, so the empty sits at the centre
+    and its display size is half of the longest edge. Links to sibling
+    volumes are written as `avp_wp_link_*` properties instead of
+    geometry - the graph is far easier to read from the object
+    properties than from a thicket of connecting curves.
+    """
+    n = 0
+    for grp in groups:
+        for wp in grp.alien:
+            vx, vy, vz = world_pos(wp.centre, scale)
+            longest = max(wp.max_extents[i] - wp.min_extents[i]
+                          for i in range(3))
+            half = max(longest, 0) / 2.0
+            tag = sanitize(grp.module_tag) if grp.module_tag else ""
+            name = (f"{base}_wp_{tag}_{wp.index:03d}" if tag
+                    else f"{base}_wp_m{grp.module_index}_{wp.index:03d}")
+            e = bpy.data.objects.new(name, None)
+            e.empty_display_type = 'CUBE'
+            # Cube display size is a half-extent, matching min/max.
+            e.empty_display_size = half * scale if scale > 0 else half
+            e.location = (vx, vy, vz)
+            props = {
+                AVP_PROP_TYPE:            AVP_TYPE_WAYPOINT,
+                AVP_PROP_NAME:            grp.module_tag,
+                AVP_PROP_FLAGS:           wp.flags,
+                AVP_PROP_WP_MODULE_INDEX: grp.module_index,
+                AVP_PROP_WP_INDEX:        wp.index,
+                AVP_PROP_WP_CENTRE:       str(wp.centre),
+                AVP_PROP_WP_MIN_EXTENTS:  str(wp.min_extents),
+                AVP_PROP_WP_MAX_EXTENTS:  str(wp.max_extents),
+            }
+            if wp.links:
+                # Comma-separated indices: readable in the UI and cheap to
+                # parse back from a script.
+                props[AVP_PROP_WP_LINK_INDICES] = ",".join(
+                    str(lk.index) for lk in wp.links)
+                props[AVP_PROP_WP_LINK_FLAGS] = ",".join(
+                    str(lk.flags) for lk in wp.links)
+            _apply_props(e, props)
+            collection.objects.link(e)
+            n += 1
     return n
 
 

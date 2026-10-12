@@ -122,9 +122,24 @@ afterwards.
   before importing. Disabled automatically when Import Materials is
   off.
 
+Textures are resolved by the path stored in the RIF, so two textures
+that share a file name (the game reuses `lights.rim` and friends across
+levels) stay distinct; materials are named after that path
+(`Stat101_Common_Lights`) and record it in `avp_tex_path`. The import
+summary reports how many references resolved by path, by a unique file
+name, ambiguously, or not at all.
+
 **Data** — one toggle per marker type: attachment points, placed-
 object hierarchy, dynamic spawn points, sound emitters, player
-starts, camera origins, AI paths (curves), and lights.
+starts, camera origins, AI patrol paths, and lights. A patrol path is
+imported as a curve through the world positions of the AI modules it
+names (a path is a list of modules, not of coordinates), with the
+module indices and point flags kept as `avp_*` properties.
+**Import Waypoints** is off by default: it adds the Alien AI
+navigation volumes of a level, one cube empty per volume, sized to
+the volume and carrying its links to neighbouring volumes as
+`avp_wp_link_*` properties. A level holds hundreds of them, so they
+are opt-in.
 
 **Animation**
 - **Animate Level Tracks** — animated objects as NLA strips.

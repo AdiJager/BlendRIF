@@ -18,6 +18,10 @@ BMP_HEADER_SIZE = 4
 # flags(4) + index(4) + packed version/enum(4) + 8 bytes reserved.
 BMP_RECORD_SIZE = 20
 
+# Sanity cap on the MATCHIMG rule count; the shipped chunks hold a few
+# dozen, so a corrupt count must not make the parser loop forever.
+MATCHIMG_MAX_RULES = 4096
+
 
 @dataclass
 class BitmapEntry:
@@ -86,36 +90,57 @@ def parse_bitmap_list(data: bytes) -> dict[int, BitmapEntry]:
 
 
 def parse_image_descriptor(data: bytes, offset: int):
-    """Parse one ImageDescriptor at offset; returns (descriptor, new_offset)."""
+    """Parse one ImageDescriptor at offset; returns (descriptor, new_offset).
+
+    Layout (BMPNAMES.CPP): int32 flags, three int32 spares, then three
+    NUL-terminated strings (filename, rifname, fixrifname), padded to a
+    4-byte boundary. The strings live in the *strings* field names from
+    the source: filename is "name.bmp", rifname the source RIM and
+    fixrifname the fixed-palette variant.
+    """
     if offset + 16 > len(data):
         return None, offset
     flags = struct.unpack_from("<i", data, offset)[0]
-    offset += 16
-    filename, offset = read_cstr(data, offset)
-    rifname, offset = read_cstr(data, offset)
-    fixrifname, offset = read_cstr(data, offset)
+    pos = offset + 16                    # flags + 3 spares
+    filename, pos = read_cstr(data, pos)
+    rifname, pos = read_cstr(data, pos)
+    fixrifname, pos = read_cstr(data, pos)
+    # The record is 4-byte aligned; skip the pad bytes.
+    while pos < len(data) and pos % 4 != 0:
+        pos += 1
     return ImageDescriptor(flags=flags, filename=filename,
-                           rifname=rifname, fixrifname=fixrifname), offset
+                           rifname=rifname, fixrifname=fixrifname), pos
 
 
 def parse_matchimg(data: bytes) -> MatchImg | None:
-    """Parse a MATCHIMG payload into a MatchImg, or None if malformed."""
+    """Parse a MATCHIMG payload into a MatchImg, or None if malformed.
+
+    Header (BMPNAMES.CPP): int32 spare, int32 spare, int32 flags,
+    int32 rule count, then the rules. Each rule is 12 bytes of spares
+    followed by the `load` and `insteadof` ImageDescriptors.
+    """
     if len(data) < 16:
         return None
     try:
         flags = struct.unpack_from("<i", data, 8)[0]
         listsize = struct.unpack_from("<i", data, 12)[0]
+        if listsize < 0 or listsize > MATCHIMG_MAX_RULES:
+            log.warning(f"parse_matchimg: implausible rule count {listsize}")
+            return None
         offset = 16
         rules: list[MatchImgRule] = []
-        # Cap at 200 rules defensively - corrupt listsize would loop forever.
-        for _ in range(min(listsize, 200)):
+        for i in range(listsize):
             if offset + 12 > len(data):
-                break
-            offset += 12
+                log.warning(f"parse_matchimg: truncated before rule {i}"
+                            f"/{listsize}")
+                return None
+            offset += 12                     # per-rule spares
             load, offset = parse_image_descriptor(data, offset)
             insteadof, offset = parse_image_descriptor(data, offset)
-            if load and insteadof:
-                rules.append(MatchImgRule(load=load, insteadof=insteadof))
+            if load is None or insteadof is None:
+                log.warning(f"parse_matchimg: truncated inside rule {i}")
+                return None
+            rules.append(MatchImgRule(load=load, insteadof=insteadof))
         return MatchImg(flags=flags, rules=rules)
     except (struct.error, IndexError) as e:
         log.warning(f"parse_matchimg: {type(e).__name__}: {e}")

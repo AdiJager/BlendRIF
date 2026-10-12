@@ -35,6 +35,7 @@ class ImportCounters:
     ps: int = 0                 # AVPSTART player starts
     cam: int = 0                # CAMORIGN camera origins
     path: int = 0               # AVPPATH2 patrol paths
+    waypoints: int = 0          # Alien WAYPOINT navigation volumes
     lights: int = 0             # LIGHTSET lights
     anims: int = 0              # OBJTRAK2 level-track animations
     smooth: int = 0             # meshes smoothed by Auto Smooth

@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 AdiJager
 
-"""DUMOBJ / PLACHIDT / AVPGENER / SOUNDOB2 / AVPSTART / CAMORIGN / AVPPATH2 parsers."""
+"""DUMOBJ / PLACHIDT / AVPGENER / SOUNDOB2 / AVPSTART / CAMORIGN / AVPPATH2 parsers.
+
+AVPPATH2 is the AI patrol-path system that replaced the ground half of
+the waypoint data. A path is an ordered list of AI *modules*; the game
+resolves the geometry at runtime from each module's world position, so
+the importer does the same (see empties.create_path_curves).
+"""
 
 from __future__ import annotations
 
@@ -29,6 +35,21 @@ CAMORIGN_OFF_MATRIX = 24    # int32 x9 rotation matrix
 
 # Each AVPPATH2 point: module(4) + loc(12) + flags(4) + pad(4) = 24 bytes.
 PATH_POINT_SIZE = 24
+
+# Sanity cap on the declared point count. The longest shipped path has
+# 80 points; a corrupt count must not make the parser loop forever.
+MAX_PATH_POINTS = 4096
+
+# Path flags (PathChnk.hpp). LoopPath makes the game walk straight back
+# to the first module; BackAndForth mirrors the module list before
+# walking it. The path point's own `loc` field is legacy: every one of
+# the 1098 points in the retail levels stores (0, 0, 0) there and the
+# game tracks patrols by module, not by coordinate (see Projload.cpp
+# setup_paths / bh_ais.c modules_in_path).
+PATH_FLAG_LOOP          = 0x00000001   # PathFlag_LoopPath
+PATH_FLAG_BACK_AND_FORTH = 0x00000002  # PathFlag_BackAndForth
+PATH_POINT_FLAG_INTERPOLATED = 0x00000001  # PathPointFlag_InterpolatedPoint
+PATH_POINT_FLAG_LOCATION_VALID = 0x00000002  # PathPointFlag_LocationValid
 
 
 @dataclass
@@ -89,6 +110,13 @@ class CamOrign:
 
 @dataclass
 class PathPoint:
+    """One step of a patrol path: an AI module, not a coordinate.
+
+    `loc` is the legacy per-point position. It is (0, 0, 0) in all 1098
+    points of the retail levels, so callers should place the point at
+    the referenced module's world position (OBJHEAD1 with this
+    `module` as its index_num).
+    """
     module: int
     loc: tuple[int, int, int]
     flags: int
@@ -241,24 +269,32 @@ def parse_camorign(data: bytes) -> CamOrign | None:
 
 
 def parse_avppath2(data: bytes) -> AvpPath2 | None:
-    """Parse an AVPPATH2 payload into an AvpPath2, or None if malformed."""
+    """Parse an AVPPATH2 payload into an AvpPath2, or None if malformed.
+
+    An empty path name is legal: one retail path (a 9-point patrol in
+    Nost03.RIF) is stored with a zeroed name field, so it is parsed and
+    named by the caller instead of being dropped.
+    """
     if len(data) < 4:
         return None
     try:
         r = BinaryReader(data)
         name = r.strz()
-        if not name:
-            return None
         r.align4()
         path_id = r.i32()
         flags = r.i32()
         r.i32()                       # spare2 - unused
         path_length = r.i32()
+        if path_length < 0 or path_length > MAX_PATH_POINTS:
+            log.warning(f"parse_avppath2: implausible point count {path_length}")
+            return None
         points: list[PathPoint] = []
-        # Cap at 500 points defensively - corrupt count would loop forever.
-        for _ in range(min(path_length, 500)):
+        for _ in range(path_length):
             if r.remaining() < PATH_POINT_SIZE:
-                break
+                # The header promises more points than the payload holds.
+                log.warning(f"parse_avppath2: truncated after "
+                            f"{len(points)}/{path_length} point(s)")
+                return None
             module_idx = r.i32()
             loc = r.i32x3()
             pflags = r.i32()

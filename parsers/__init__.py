@@ -31,6 +31,10 @@ from .markers import (
     parse_avpgener, parse_soundob2, parse_avpstart,
     parse_camorign, parse_avppath2,
 )
+from .waypoints import (
+    WaypointLink, Waypoint, ModuleWaypoints,
+    parse_waypoint, first_ground_index, split_alien_waypoints,
+)
 
 __all__ = [
     # shapes
@@ -50,4 +54,7 @@ __all__ = [
     "parse_dumobjdt", "parse_dumobjtx", "parse_plachidt",
     "parse_avpgener", "parse_soundob2", "parse_avpstart",
     "parse_camorign", "parse_avppath2",
+    # waypoints
+    "WaypointLink", "Waypoint", "ModuleWaypoints",
+    "parse_waypoint", "first_ground_index", "split_alien_waypoints",
 ]

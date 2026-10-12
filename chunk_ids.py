@@ -43,6 +43,16 @@ class Chunk:
     CAMORIGN = "CAMORIGN"
     AVPPATH2 = "AVPPATH2"
 
+    # --- AI navigation (parsers/waypoints.py) --------------------------
+    # One WAYPOINT chunk per AI module, stored inside that module's
+    # MODULEDT chunk (REBINFF2 > RBOBJECT > MODULEDT > WAYPOINT). The
+    # ground volumes in the same list were superseded by AVPPATH2 and
+    # are not imported. R6WAYPNT (R6_Waypoint_Chunk in wpchunk.cpp) is
+    # the level-wide variant; it does not occur in any shipped RIF.
+    MODULEDT = "MODULEDT"
+    WAYPOINT = "WAYPOINT"
+    R6WAYPNT = "R6WAYPNT"
+
     # --- lights / animation -------------------------------------------
     LIGHTSET  = "LIGHTSET"
     STDLIGHT  = "STDLIGHT"
@@ -82,7 +92,6 @@ class Chunk:
     OBJTRAK2  = "OBJTRAK2"
     VIOBJECT  = "VIOBJECT"
     VOBJPROP  = "VOBJPROP"
-    MODULEDT  = "MODULEDT"
     ADJMDLEP  = "ADJMDLEP"
     VMDARRAY  = "VMDARRAY"
 

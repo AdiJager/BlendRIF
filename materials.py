@@ -1,29 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 AdiJager
 
-"""Materials, textures and MATCHIMG substitution.
+"""Materials and MATCHIMG substitution.
 
-Texture lookup tries, in order: (1) the original game path from
-BitmapEntry.raw_name, (2) the RIF level name as a subdirectory hint,
-(3) the first PNG whose basename matches. build_tex_index caches its
-walk per (root, mtime) so repeated imports do not re-scan a directory
-that may hold thousands of PNGs.
-
-Basename collisions are handled in two places:
-  * build_tex_index inserts every PNG under both its full relative
-    path (graphics/envrnmts/towers03/lights) and its stripped form
-    (envrnmts/towers03/lights). The retail _ffl_unpacked layout
-    starts at graphics/ but RIF raw_names never carry that prefix, so
-    without the stripped key the normalized lookup always misses and
-    every lookup falls back to by_base - where basename collisions
-    silently resolve to the alphabetically-first file
-    (Common/Lights.png would beat Envrnmts/Towers03/Lights.png).
-  * get_material creates a disambiguated material (Stat101_Common_Lights)
-    when a name collision would otherwise rebind a shared material to a
-    different texture. Material names derive from the bitmap basename
-    only ("Stat101_Lights"), so two distinct textures under different
-    paths (Common/Lights vs Towers03/Lights) would otherwise alias to
-    one material and the last write would win.
+Which PNG a bitmap resolves to is decided in textures.py (path first,
+bare name only as a unique last resort). This module turns the resolved
+path into a Blender material and guarantees one material per texture
+path: the material name is derived from that path
+(`Stat101_Common_Lights`, `Stat101_Envrnmts_Towers03_Lights`), so two
+textures that share a file name under different directories never alias
+onto the same material. If a name is ever already taken by a material
+bound to a different texture, a short hash of the path is appended
+instead of silently rebinding (see textures.disambiguate_name).
 
 Every material produced by get_material carries the backface-culling
 flag requested by the caller. AvP culls back-facing polygons like
@@ -33,6 +21,10 @@ in-game; enabling the same cull in Blender hides it in the viewport
 too and stops Z-fighting on coincident surfaces. The option lives in
 the operator's Materials section (default ON) and is threaded through
 build_mesh -> get_material as `cull_backfaces`.
+
+`TEX_PATH_PROP` records the texture's tree-relative path on every
+material, so a material can be traced back to the file it came from
+without guessing from its name.
 """
 
 from __future__ import annotations
@@ -44,6 +36,13 @@ import bpy
 from .config import MAGENTA, MAT_ROUGHNESS, MAT_SPECULAR
 from .utils import log
 from .parsers.bitmaps import MatchImgRule
+from .textures import (
+    build_texture_index, resolve_texture, material_name, disambiguate_name,
+)
+
+
+# Custom property on materials: the tree-relative texture path.
+TEX_PATH_PROP = "avp_tex_path"
 
 
 # ---------------------------------------------------------------------------
@@ -118,113 +117,63 @@ def _mat_has_image_at(mat, png: str | None) -> bool:
            os.path.normcase(os.path.normpath(bpy.path.abspath(png)))
 
 
-def _parent_dir_name(png: str | None) -> str:
-    """Immediate parent dir name of a PNG path, without leading/trailing slashes."""
-    if not png:
-        return ""
-    parent = os.path.basename(os.path.dirname(png.replace('\\', '/')))
-    return parent or ""
-
-
-def _set_tex(mat, png: str) -> None:
-    """Replace the material's image node with a fresh one for `png`."""
-    # Kept for callers that explicitly want to mutate an existing
-    # material (e.g. a future "force reimport this material" feature).
-    # The normal import path does NOT use this to swap a shared
-    # material's texture - see get_material for the collision handling
-    # that replaced it.
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    for n in list(nodes):
-        if n.type == 'TEX_IMAGE':
-            nodes.remove(n)
-    bsdf = _get_bsdf(mat)
-    if bsdf is None:
-        nodes, links, bsdf = _new_principled(mat)
-    else:
-        _apply_material_defaults(bsdf)
-    try:
-        img = bpy.data.images.load(png, check_existing=True)
-        t = nodes.new("ShaderNodeTexImage")
-        t.image = img
-        t.extension = 'REPEAT'
-        links.new(t.outputs["Color"], bsdf.inputs["Base Color"])
-    except (OSError, RuntimeError) as e:
-        log.warning(f"    Failed to load {png}: {e}")
-        bsdf.inputs["Base Color"].default_value = MAGENTA
-
-
 # ---------------------------------------------------------------------------
 # Materials
 # ---------------------------------------------------------------------------
 
 def get_material(name, png, cache, color=None,
                  raw_name: str = "", level_hint: str = "",
-                 cull_backfaces: bool = True):
-    """Return a cached material for (name, png, color), creating one if needed.
+                 cull_backfaces: bool = True, tex_path: str = ""):
+    """Return a cached material for (name, png, tex_path); create if needed.
 
-    `cull_backfaces` mirrors the game engine's polygon culling. When
-    True (default), every material produced here - new, reused, or
-    disambiguated - gets `use_backface_culling = True`. Set False to
-    keep Blender's default two-sided rendering, which shows the
-    designer/helper geometry the game hides.
+    `name` is the display name derived from the texture path (see
+    textures.material_name); `png` the resolved file; `tex_path` its
+    tree-relative path, which is what the material is actually keyed
+    and identified by.
 
-    A material name is derived from the bitmap basename only
-    ("Stat101_Lights"), so two distinct textures with the same
-    basename under different directories (Common/Lights.png vs
-    Envrnmts/Towers03/Lights.png) produce the same name. When that
-    name exists but with a DIFFERENT texture bound, a disambiguated
-    material carrying the texture's parent directory
-    (Stat101_Common_Lights) is created instead of silently rebinding -
-    which would flip every existing user of Stat101_Lights to the
-    wrong texture.
+    When `name` is already taken by a material bound to a *different*
+    texture, the new material gets a hashed suffix instead of rebinding
+    the existing one - which would flip every earlier user of that
+    material to the wrong image.
+
+    `cull_backfaces` mirrors the game engine's polygon culling: with
+    True (default) every material produced here - new, reused or
+    disambiguated - gets `use_backface_culling = True`.
     """
-    # Cache key includes png so two shapes with the same material name
-    # but different textures do not collide.
+    # Cache key includes the resolved file so two shapes with the same
+    # material name but different textures do not collide.
     key = (name, png, color)
     if key in cache:
         return cache[key]
 
+    identity = tex_path or raw_name or (png or "")
     ex = bpy.data.materials.get(name)
     if ex is not None:
-        # Refresh the culling flag even on reused materials - a later
-        # import with a different setting must not inherit stale state.
+        ex_path = ex.get(TEX_PATH_PROP, "")
+        same_texture = (ex_path == identity) if identity else True
         if hasattr(ex, "use_backface_culling"):
             ex.use_backface_culling = cull_backfaces
-        if png is not None and not _mat_has_image_at(ex, png):
-            # Texture mismatch under the same basename - disambiguate.
-            parent = _parent_dir_name(png)
-            new_name = f"{name}_{parent}" if parent else f"{name}_alt"
-            # The disambiguated name may already exist from a previous
-            # import in the same session; keep bumping until we find
-            # either a free slot or an existing material that already
-            # has exactly the texture we want.
-            alt = bpy.data.materials.get(new_name)
-            guard = 0
-            while alt is not None and not _mat_has_image_at(alt, png) \
-                    and guard < 32:
-                new_name = f"{new_name}_x"
-                alt = bpy.data.materials.get(new_name)
-                guard += 1
-            if alt is not None:
-                # Reuse the disambiguated material.
-                if hasattr(alt, "use_backface_culling"):
-                    alt.use_backface_culling = cull_backfaces
-                bsdf = _get_bsdf(alt)
-                if bsdf is not None:
-                    _apply_material_defaults(bsdf)
-                cache[key] = alt
-                return alt
-            # Fall through to creation with the disambiguated name.
-            log.info(f"    [MAT] '{name}' -> '{new_name}' "
-                     f"(basename collision, keeping both textures)")
-            name = new_name
-        else:
+        if same_texture and (png is None or _mat_has_image_at(ex, png)):
             bsdf = _get_bsdf(ex)
             if bsdf is not None:
                 _apply_material_defaults(bsdf)
+            _set_tex_path(ex, identity)
             cache[key] = ex
             return ex
+        # Name taken by a different texture: derive a unique name.
+        new_name = disambiguate_name(name, identity or name)
+        alt = bpy.data.materials.get(new_name)
+        if alt is not None and _mat_has_image_at(alt, png):
+            if hasattr(alt, "use_backface_culling"):
+                alt.use_backface_culling = cull_backfaces
+            bsdf = _get_bsdf(alt)
+            if bsdf is not None:
+                _apply_material_defaults(bsdf)
+            cache[key] = alt
+            return alt
+        log.info(f"    [MAT] '{name}' -> '{new_name}' "
+                 f"(name already bound to {ex_path or 'another texture'})")
+        name = new_name
 
     m = bpy.data.materials.new(name)
     nodes, links, bsdf = _new_principled(m, cull_backfaces=cull_backfaces)
@@ -241,118 +190,112 @@ def get_material(name, png, cache, color=None,
             bsdf.inputs["Base Color"].default_value = MAGENTA
     else:
         bsdf.inputs["Base Color"].default_value = MAGENTA
+    _set_tex_path(m, identity)
     cache[key] = m
     return m
 
 
-# ---------------------------------------------------------------------------
-# Texture index (cached per (root, mtime))
-# ---------------------------------------------------------------------------
+def _set_tex_path(mat, tex_path: str) -> None:
+    """Record the source texture path on a material, when known."""
+    if not tex_path:
+        return
+    try:
+        mat[TEX_PATH_PROP] = tex_path
+    except (TypeError, ValueError):
+        pass
 
-# Keyed by (absolute root, mtime); invalidates when the directory changes.
-_TEX_INDEX_CACHE: dict[tuple[str, float], tuple[dict, dict]] = {}
 
+# ---------------------------------------------------------------------------
+# Compatibility shims
+# ---------------------------------------------------------------------------
 
 def build_tex_index(root: str):
-    """Return ({relative path: full}, {basename: full}) for PNGs under root."""
-    if not os.path.isdir(root):
-        return {}, {}
-
-    try:
-        mtime = os.path.getmtime(root)
-    except OSError:
-        mtime = 0.0
-
-    cache_key = (os.path.abspath(root), mtime)
-    hit = _TEX_INDEX_CACHE.get(cache_key)
-    if hit is not None:
-        return hit
-
-    by_rel: dict[str, str] = {}
-    by_base: dict[str, str] = {}
-    for r, _, fs in os.walk(root):
-        for f in fs:
-            if not f.lower().endswith('.png'):
-                continue
-            full = os.path.join(r, f)
-            rel = os.path.relpath(full, root).replace(os.sep, '/').lower()
-            rel_noext = os.path.splitext(rel)[0]
-            # Insert both keys. The retail _ffl_unpacked layout starts
-            # at graphics/, but RIF raw_names never carry that prefix,
-            # so _normalize_raw strips it - by_rel lookups would
-            # otherwise always miss and fall through to by_base, where
-            # basename collisions silently pick the wrong file.
-            by_rel[rel_noext] = full
-            if rel_noext.startswith('graphics/'):
-                by_rel[rel_noext[len('graphics/'):]] = full
-            base = os.path.splitext(f)[0].lower()
-            if base not in by_base:
-                by_base[base] = full
-
-    _TEX_INDEX_CACHE[cache_key] = (by_rel, by_base)
-    return by_rel, by_base
-
-
-def _normalize_raw(raw_name: str) -> str:
-    """Normalise a game path to a relative-path key for by_rel."""
-    if not raw_name:
-        return ""
-    p = raw_name.replace('\\', '/').lower()
-    p = os.path.splitext(p)[0]
-    for pref in ("textures/", "texture/", "art/", "artwork/"):
-        if p.startswith(pref):
-            p = p[len(pref):]
-    return p.lstrip('/')
+    """Legacy 2-tuple view of textures.build_texture_index."""
+    return build_texture_index(root)
 
 
 def find_tex(tex_idx, name: str, raw_name: str = "",
              level_hint: str = "") -> str | None:
-    """Resolve a bitmap basename to a PNG path (raw -> level -> basename)."""
-    if not name:
-        return None
-    by_rel, by_base = tex_idx if isinstance(tex_idx, tuple) else (tex_idx, tex_idx)
-
-    # 1. raw game path from the RIF.
-    cand = _normalize_raw(raw_name)
-    if cand and cand in by_rel:
-        return by_rel[cand]
-
-    # 2. level-name subdirectory.
-    if level_hint:
-        key = f"{level_hint.lower()}/{name.lower()}"
-        if key in by_rel:
-            return by_rel[key]
-        suffix = f"/{name.lower()}"
-        for rel, full in by_rel.items():
-            if rel.endswith(suffix) and level_hint.lower() in rel:
-                return full
-
-    # 3. bare basename (legacy fallback).
-    return by_base.get(name.lower())
+    """Legacy wrapper around textures.resolve_texture (path only, no stats)."""
+    res = resolve_texture(tex_idx, name, raw_name, level_hint)
+    return res.png
 
 
 # ---------------------------------------------------------------------------
 # MATCHIMG
 # ---------------------------------------------------------------------------
+#
+# The engine builds an ImageDescriptor for every bitmap (filename + the
+# RIM the bitmap belongs to) and replaces it with a rule's `load`
+# descriptor when a rule's `insteadof` descriptor compares equal
+# (BMPNAMES.CPP Matching_Images_Chunk::GetLoadImage, applied in
+# CHNKTEXI.CPP / CHNKIMAG.CPP). The importer keeps a basename lookup and
+# prefers the rule whose `rifname` matches the bitmap's own RIM, which is
+# how the shipped rules are written.
 
 def _basename_no_ext(path: str) -> str:
     """Basename of a path with the extension stripped."""
     return os.path.splitext(os.path.basename(path.replace('\\', '/')))[0]
 
 
-def build_matchimg_index(rules: list[MatchImgRule]) -> dict[str, str]:
-    """Map 'insteadof' basenames to 'load' basenames, both lowercase."""
-    idx: dict[str, str] = {}
+def build_matchimg_index(rules: list[MatchImgRule]) -> dict[str, list]:
+    """Map 'insteadof' basenames (lower case) to their rules.
+
+    A list per name, because a name can carry several rules differing in
+    the RIM they apply to; `apply_matchimg_index` picks between them.
+    """
+    idx: dict[str, list] = {}
     for r in rules:
-        io_name = r.insteadof.filename
+        io_name = _basename_no_ext(r.insteadof.filename)
         load_name = r.load.filename
         if io_name and load_name:
-            idx[_basename_no_ext(io_name).lower()] = _basename_no_ext(load_name)
+            idx.setdefault(io_name.lower(), []).append(r)
     return idx
 
 
-def apply_matchimg_index(name: str | None, index: dict[str, str]) -> str | None:
-    """Apply a MATCHIMG index substitution, leaving unmatched names intact."""
+def _rule_matches_rim(rule, raw_name: str, name: str) -> int:
+    """Score how well a rule's `insteadof` describes this bitmap (higher first).
+
+    3 = its RIM name appears in the bitmap's path, 2 = the rule does not
+    restrict the RIM, 1 = some other RIM (kept as a last resort so a
+    substitution still happens when nothing better is on offer).
+    """
+    want = (rule.insteadof.rifname or "").replace('\\', '/').lower().strip('/')
+    have = (raw_name or "").replace('\\', '/').lower()
+    if not want:
+        return 2
+    if want in have:
+        return 3
+    if want == (name or "").lower():
+        return 3
+    return 1
+
+
+def apply_matchimg_index(name: str | None, index: dict) -> str | None:
+    """Substitute a bitmap name through the MATCHIMG rules.
+
+    Returns the *basename* of the bitmap to load instead (the rule's
+    `load` name), or `name` unchanged when no rule applies. Callers that
+    need the exact file should use `apply_matchimg_rule`, which also
+    returns the load descriptor's own path.
+    """
+    res = apply_matchimg_rule(name, "", index)
+    return res[0] if res else name
+
+
+def apply_matchimg_rule(name: str | None, raw_name: str, index: dict):
+    """Resolve a bitmap through MATCHIMG; return (name, path) or None.
+
+    `name` is the bitmap basename, `raw_name` its stored path (used to
+    pick the rule whose RIM matches). The returned path is the `load`
+    descriptor's filename, and the name its basename.
+    """
     if not name or not index:
-        return name
-    return index.get(name.lower(), name)
+        return None
+    rules = index.get(name.lower())
+    if not rules:
+        return None
+    best = max(rules, key=lambda r: _rule_matches_rim(r, raw_name, name))
+    load = best.load
+    load_name = _basename_no_ext(load.filename)
+    return (load_name or name), load.filename

@@ -60,7 +60,9 @@ from .config import (
     OrphanMode, PivotMode, ExtRifStrategy,
 )
 from .collections_util import create_import_collections, apply_auto_smooth
-from .materials import build_tex_index
+from .textures import (
+    TextureIndex, TextureStats, build_texture_index,
+)
 from .scan import RifScanner
 from .shape_processor import ImportContext
 
@@ -220,6 +222,16 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
         name="Import AVPPATH2", default=True,
         description="Import AVPPATH2 AI patrol paths as curve objects so you "
                     "can inspect them in the viewport")
+    import_waypoints: bpy.props.BoolProperty(
+        name="Import Waypoints", default=False,
+        description="Import the Alien AI navigation volumes (WAYPOINT chunks "
+                    "inside each AI module's MODULEDT) as cube empties sized "
+                    "to the volume, with their links to neighbouring volumes "
+                    "stored as avp_wp_link_* properties. Off by default: a "
+                    "level holds hundreds of them and they are only useful "
+                    "when studying AI navigation. The ground/marine volumes "
+                    "stored in the same chunk are never imported - AVPPATH2 "
+                    "patrol paths replaced them before release")
     import_lights: bpy.props.BoolProperty(
         name="Import LIGHTSET", default=True,
         description="Import STDLIGHT entries from LIGHTSET as Blender point/spot "
@@ -363,23 +375,25 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
             return {'FINISHED'}
 
         optional = {"missing_ext"} if self.mark_missing_ext else set()
+        if self.import_waypoints:
+            optional.add("waypoints")
         cols = create_import_collections(base, enable_optional=optional)
         log.info(f"Created collection: {cols['__main__'].name}")
 
+        tex_stats = TextureStats()
         if self.import_materials and discovered.textures:
             t = time.perf_counter()
-            tex_idx = build_tex_index(discovered.textures)
+            tex_idx = build_texture_index(discovered.textures)
             dt_tex = time.perf_counter() - t
-            n_rel = len(tex_idx[0])
-            n_base = len(tex_idx[1])
-            log.info(f"Textures: {n_rel} lookup key(s), "
-                     f"{n_base} unique basename(s) "
+            log.info(f"Textures: {len(tex_idx.by_path)} path key(s), "
+                     f"{tex_idx.n_files} file(s), "
+                     f"{tex_idx.n_ambiguous_names} ambiguous name(s) "
                      f"({dt_tex*1000:.0f} ms)")
         elif not self.import_materials:
-            tex_idx = ({}, {})
+            tex_idx = TextureIndex()
             log.info("Textures: (skipped - Import Materials is OFF)")
         else:
-            tex_idx = ({}, {})
+            tex_idx = TextureIndex()
             log.info("Textures: (skipped - no _ffl_unpacked directory found)")
 
         rif_dirs: list[str] = []
@@ -416,6 +430,7 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
             level_hint=scan.level_name,
             import_materials=self.import_materials,
             cull_backfaces=self.cull_backfaces,
+            tex_stats=tex_stats,
             mark_missing_ext=self.mark_missing_ext,
             missing_ext_collection=cols.get("missing_ext"),
             character_mode=bool(scan.char_bones),
@@ -427,6 +442,7 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
             "cols": cols,
             "stats": stats,
             "ext_stats": ext_stats,
+            "tex_stats": tex_stats,
             "timings": {},
         }
 
@@ -471,6 +487,7 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
                 import_avpstart=self.import_avpstart,
                 import_camorign=self.import_camorign,
                 import_paths=self.import_paths,
+                import_waypoints=self.import_waypoints,
                 scale=self.scale,
             ),
             scan, counters, base, cols,

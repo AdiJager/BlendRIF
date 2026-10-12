@@ -217,8 +217,20 @@ class TestParseAvpPath2(unittest.TestCase):
         p = parse_avppath2(_make_avppath2(name="x"))
         self.assertEqual(p.points, [])
 
-    def test_empty_name_returns_none(self):
-        self.assertIsNone(parse_avppath2(_make_avppath2(name="")))
+    def test_empty_name_is_accepted(self):
+        """One retail path stores a zeroed name field; it must not be dropped."""
+        p = parse_avppath2(_make_avppath2(
+            name="", path_id=5, flags=2,
+            points=[_make_path_point(module=7, flags=0)]))
+        self.assertIsNotNone(p)
+        self.assertEqual(p.name, "")
+        self.assertEqual(p.id, 5)
+        self.assertEqual(len(p.points), 1)
+
+    def test_truncated_payload_returns_none(self):
+        """Header promises a point the payload does not contain."""
+        good = _make_avppath2(name="p", points=[_make_path_point()])
+        self.assertIsNone(parse_avppath2(good[:-8]))
 
 
 if __name__ == "__main__":
