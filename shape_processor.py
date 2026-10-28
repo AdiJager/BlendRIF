@@ -88,7 +88,6 @@ class ImportContext:
     bmp_names: dict
     tex_idx: tuple
     bm_mode: str
-    uv_scale: float
     uv_int16_mode: bool
     mat_cache: dict
     matchimg_index: dict
@@ -459,7 +458,7 @@ def process_shape(shape: ShapeGroup, obj: ObjHead | None, idx: int,
 
     result = build_mesh(
         res.shape, ctx.base, name, ctx.scale,
-        bitmaps, ctx.tex_idx, ctx.bm_mode, ctx.uv_scale, ctx.mat_cache,
+        bitmaps, ctx.tex_idx, ctx.bm_mode, ctx.mat_cache,
         xform, do_center, ctx.clrlookp_table, ctx.matchimg_index,
         uv_int16_mode=ctx.uv_int16_mode,
         level_hint=ctx.level_hint,

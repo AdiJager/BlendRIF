@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "avp_rif_importer"
-version = "1.2.0"
+version = "1.3.2"
 name = "Aliens vs Predator RIF Importer"
 tagline = "Import AvP (1999) RIF assets: models, levels, textures, rigs"
 maintainer = "AdiJager"

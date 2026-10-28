@@ -144,6 +144,8 @@ COLLECTION_GROUPS = {
     "animations":     "Animations",
     # Alien AI navigation volumes (WAYPOINT chunks inside MODULEDT).
     "waypoints":      "Waypoints",
+    # Morph-target geometry (SHPMORPH > SUBSHAPE), opt-in.
+    "morphs":         "Morphs",
     # Debug aid: empty markers at pivots of unresolved SHPEXTFL refs.
     "missing_ext":    "MissingExtRif",
 }
@@ -152,4 +154,4 @@ COLLECTION_GROUPS = {
 # enabled (e.g. debug-only groups). Keys match COLLECTION_GROUPS; the
 # value here is the set of keys create_import_collections() skips unless
 # the caller passes them in enable_optional.
-OPTIONAL_COLLECTION_GROUPS = {"missing_ext", "waypoints"}
+OPTIONAL_COLLECTION_GROUPS = {"missing_ext", "waypoints", "morphs"}

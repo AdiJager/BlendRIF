@@ -92,6 +92,10 @@ def print_summary(op, scan, state, counters, ctx):
              + (f" ({counters.smooth} meshes, {smooth_deg:.1f} deg)"
                 if op.auto_smooth else ""))
     log.info(f"  Lights:               {counters.lights}")
+    if op.import_morph:
+        log.info(f"  Morph targets:        {counters.morph}"
+                 + (f"  [{counters.morph_skipped} skipped: parent not placed]"
+                    if counters.morph_skipped else ""))
     if op.import_waypoints:
         n_ground = sum(g.n_ground for g in scan.waypoint_groups)
         log.info(f"  Waypoints (Alien):    {counters.waypoints} "

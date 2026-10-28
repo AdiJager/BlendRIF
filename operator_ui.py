@@ -54,6 +54,7 @@ def draw_operator_panels(op, layout):
     box.prop(op, "import_camorign")
     box.prop(op, "import_paths")
     box.prop(op, "import_waypoints")
+    box.prop(op, "import_morph")
     box.prop(op, "import_lights")
 
     box = layout.box()

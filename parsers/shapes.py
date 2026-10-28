@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 AdiJager
 
-"""SHPHEAD1 / OBJHEAD1 / SHPEXTFL parsers."""
+"""SHPHEAD1 / OBJHEAD1 / SHPEXTFL / SHPMORPH parsers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from ..binary_reader import BinaryReader
 from ..chunk_ids import Chunk
-from ..chunks import parse_chunks
+from ..chunks import ShapeGroup, parse_chunks
 from ..utils import log
 from .bitmaps import BitmapEntry, parse_bitmap_list
 
@@ -19,6 +19,8 @@ from .bitmaps import BitmapEntry, parse_bitmap_list
 # Minimum payload sizes in bytes (parser bails below this).
 SHPHEAD1_MIN_SIZE = 60
 OBJHEAD1_MIN_SIZE = 60
+# SUBSHPHD: flags, file_id_num, num_verts, num_polys, radius, 3x2 extents.
+SUBSHPHD_SIZE = 44
 
 # OBJHEAD1 field offsets (little-endian).
 OBJHEAD_OFF_FLAGS   = 0     # int32 engine flags
@@ -137,4 +139,89 @@ def parse_shpextfl(ext_fl_payload: bytes) -> ShpExtFl:
             parsed = parse_bitmap_list(cdata)
             if parsed:
                 result.bitmaps.update(parsed)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Morph targets (SHPMORPH > SUBSHAPE)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SubShapeHead:
+    """Header of one morph-target sub-shape (SUBSHPHD)."""
+    flags: int
+    file_id_num: int
+    num_verts: int
+    num_polys: int
+    radius: float
+    max_extents: tuple[int, int, int]
+    min_extents: tuple[int, int, int]
+
+
+def parse_subshphead(data: bytes) -> SubShapeHead | None:
+    """Parse a SUBSHPHD payload into a SubShapeHead, or None if malformed.
+
+    Layout (SHPCHUNK.CPP, Shape_Sub_Shape_Header_Chunk): int32 flags,
+    int32 file_id_num, int32 num_verts, int32 num_polys, float radius,
+    then max/min x, y, z as int32 pairs.
+    """
+    if len(data) < SUBSHPHD_SIZE:
+        return None
+    try:
+        r = BinaryReader(data)
+        flags = r.i32()
+        file_id_num = r.i32()
+        num_verts = r.i32()
+        num_polys = r.i32()
+        radius = r.f32()
+        max_x = r.i32()
+        min_x = r.i32()
+        max_y = r.i32()
+        min_y = r.i32()
+        max_z = r.i32()
+        min_z = r.i32()
+        return SubShapeHead(flags=flags, file_id_num=file_id_num,
+                            num_verts=num_verts, num_polys=num_polys,
+                            radius=radius,
+                            max_extents=(max_x, max_y, max_z),
+                            min_extents=(min_x, min_y, min_z))
+    except (struct.error, IndexError) as e:
+        log.warning(f"parse_subshphead: {type(e).__name__}: {e}")
+        return None
+
+
+def _subshape_group(data: bytes) -> ShapeGroup:
+    """Collect the geometry chunks of one SUBSHAPE payload."""
+    head = raw = polys = uvs = None
+    sub = parse_chunks(data, quiet=True)
+    if sub is None:
+        return ShapeGroup()
+    for cid, cdata in sub:
+        if cid == Chunk.SUBSHPHD:
+            head = cdata
+        elif cid == Chunk.SHPRAWVT:
+            raw = cdata
+        elif cid == Chunk.SHPPOLYS:
+            polys = cdata
+        elif cid == Chunk.SHPUVCRD:
+            uvs = cdata
+    return ShapeGroup(head=head, raw_verts=raw, polys=polys,
+                      uvcrds=uvs, ext_fl=None)
+
+
+def parse_shpmorph(data: bytes) -> list[ShapeGroup]:
+    """Parse an SHPMORPH payload into its morph-target ShapeGroups.
+
+    SHPMORPH holds one SUBSHAPE per morph target plus a FRMMORPH frame
+    list; only the geometry of the targets is returned (the frames refer
+    to them by index and are not needed to display them). A malformed
+    payload yields an empty list rather than raising.
+    """
+    result: list[ShapeGroup] = []
+    sub = parse_chunks(data, quiet=True)
+    if sub is None:
+        return result
+    for cid, cdata in sub:
+        if cid == Chunk.SUBSHAPE:
+            result.append(_subshape_group(cdata))
     return result

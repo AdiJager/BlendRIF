@@ -49,6 +49,10 @@ AVP_PROP_EXT_NAME          = "avp_ext_name"
 AVP_PROP_SHAPE_IDX         = "avp_shape_idx"
 AVP_PROP_PLACEHOLDER_VERTS = "avp_placeholder_verts"
 
+# --- Morph target props (SHPMORPH > SUBSHAPE geometry) -----------------
+AVP_PROP_MORPH_PARENT      = "avp_morph_parent"
+AVP_PROP_MORPH_INDEX       = "avp_morph_index"
+
 # --- avp_type values --------------------------------------------------
 AVP_TYPE_DUMMY         = "dummy"
 AVP_TYPE_HIERARCHY     = "hierarchy"
@@ -59,4 +63,5 @@ AVP_TYPE_CAMERA_ORIGIN = "camera_origin"
 AVP_TYPE_PATH          = "path"
 AVP_TYPE_LIGHT         = "light"
 AVP_TYPE_WAYPOINT      = "waypoint"
+AVP_TYPE_MORPH         = "morph"
 AVP_TYPE_MISSING_EXT   = "missing_ext_rif"

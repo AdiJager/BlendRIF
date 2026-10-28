@@ -47,7 +47,7 @@ from .chunk_ids import Chunk
 from .utils import log
 from .materials import build_matchimg_index
 from .parsers.bitmaps import parse_bitmap_list, parse_matchimg, parse_clrlookp
-from .parsers.shapes import parse_shphead1, parse_objhead1
+from .parsers.shapes import parse_shphead1, parse_objhead1, parse_shpmorph
 from .parsers.markers import parse_plachidt
 from .parsers.waypoints import parse_waypoint, split_alien_waypoints
 from .parsers.char_anim import (
@@ -108,6 +108,20 @@ class ModuleWaypointGroup:
 
 
 @dataclass
+class MorphGroup:
+    """Morph targets of one shape, with the shape they belong to.
+
+    A REBSHAPE that carries SHPMORPH stores one SUBSHAPE per morph
+    target - alternate geometry the game blends to (doors, hatches).
+    The targets use the parent shape's local coordinates, so they are
+    placed with the parent's OBJHEAD1 transform.
+    """
+    parent_tag: str = ""                # SHPHEAD1 tag of the parent shape
+    parent_shape_id: int = -1           # SHPHEAD1 file_id_num of the parent
+    subs: list = field(default_factory=list)   # list[ShapeGroup]
+
+
+@dataclass
 class ScanResult:
     """Everything the importer reads from a decoded RIF before bpy is touched."""
     level_name: str = "Unknown"
@@ -135,6 +149,10 @@ class ScanResult:
     # Parsed during the scan so Stage 3 and the log summary share one
     # parse (see parsers/waypoints.py).
     waypoint_groups: list = field(default_factory=list)  # list[ModuleWaypointGroup]
+    # Morph targets (SHPMORPH > SUBSHAPE), one entry per shape that has
+    # them. Parsed during the scan; Stage 1d imports them only when the
+    # operator's "Import Morph" option is on.
+    morph_groups: list = field(default_factory=list)     # list[MorphGroup]
     lightset_list: list = field(default_factory=list)
     # Level track system (doors / lifts / rotating fans / platforms).
     # Raw payloads as returned by find_all_chunks; parsing lives in
@@ -184,6 +202,7 @@ class RifScanner:
         self._scan_markers(decoded, scan, rm)
         self._scan_specials(decoded, scan, rm)
         self._scan_waypoints(decoded, scan, rm)
+        self._scan_morph(decoded, scan, rm)
         self._scan_tracks(decoded, scan, rm)
         self._scan_char_hierarchy(decoded, scan, rm)
         self._log_scan_summary(scan)
@@ -386,6 +405,33 @@ class RifScanner:
                      + (f", {n_failed[0]} unparsable chunk(s)"
                         if n_failed[0] else ""))
 
+    def _scan_morph(self, decoded, scan, resync_max):
+        """Collect the morph targets (SHPMORPH > SUBSHAPE) of every shape.
+
+        SHPMORPH is a sibling of SHPHEAD1 inside the same REBSHAPE, so
+        walk_chunks groups the shape and its morph data together. The
+        payloads are parsed here; Stage 1d creates the meshes only when
+        the operator asks for them.
+        """
+        groups = walk_chunks(decoded,
+                             lambda ids: Chunk.SHPMORPH in ids,
+                             resync_max=resync_max)
+        for grp in groups:
+            head = (grp.get(Chunk.SHPHEAD1) or [None])[0]
+            shp = parse_shphead1(head) if head else None
+            tag = shp.tag if shp else ""
+            shape_id = shp.file_id_num if shp else -1
+            for morph_payload in grp.get(Chunk.SHPMORPH, []):
+                subs = parse_shpmorph(morph_payload)
+                if subs:
+                    scan.morph_groups.append(MorphGroup(
+                        parent_tag=tag, parent_shape_id=shape_id,
+                        subs=subs))
+        if scan.morph_groups:
+            n_subs = sum(len(g.subs) for g in scan.morph_groups)
+            log.info(f"MORPH: {n_subs} target(s) in "
+                     f"{len(scan.morph_groups)} shape(s)")
+
     def _scan_tracks(self, decoded, scan, resync_max):
         """Collect LIGHTSET and OBJTRAK2 chunk payloads."""
         # OBJTRAK2 is the level-track system (doors, rotators, lifts,
@@ -459,6 +505,10 @@ class RifScanner:
             n_vol = sum(len(g.alien) for g in scan.waypoint_groups)
             log.info(f"  Waypoints: {n_vol} Alien volume(s) in "
                      f"{len(scan.waypoint_groups)} module(s)")
+        if scan.morph_groups:
+            n_sub = sum(len(g.subs) for g in scan.morph_groups)
+            log.info(f"  Morph:     {n_sub} target(s) in "
+                     f"{len(scan.morph_groups)} shape(s)")
         if scan.char_bones:
             log.info(f"  Char:      bones={len(scan.char_bones)}  "
                      f"anim_sets={len(scan.char_anims)}  "

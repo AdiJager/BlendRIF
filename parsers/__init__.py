@@ -15,8 +15,9 @@ namespace small.
 """
 
 from .shapes import (
-    ShpHead, ObjHead, ShpExtFl,
+    ShpHead, ObjHead, ShpExtFl, SubShapeHead,
     parse_shphead1, parse_objhead1, parse_shpextfl,
+    parse_subshphead, parse_shpmorph,
 )
 from .bitmaps import (
     BitmapEntry, ImageDescriptor, MatchImgRule, MatchImg, ClrLookp,
@@ -38,8 +39,9 @@ from .waypoints import (
 
 __all__ = [
     # shapes
-    "ShpHead", "ObjHead", "ShpExtFl",
+    "ShpHead", "ObjHead", "ShpExtFl", "SubShapeHead",
     "parse_shphead1", "parse_objhead1", "parse_shpextfl",
+    "parse_subshphead", "parse_shpmorph",
     # bitmaps
     "BitmapEntry", "ImageDescriptor", "MatchImgRule", "MatchImg", "ClrLookp",
     "parse_bitmap_list", "parse_image_descriptor", "parse_matchimg",

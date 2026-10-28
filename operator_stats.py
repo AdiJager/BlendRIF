@@ -36,6 +36,8 @@ class ImportCounters:
     cam: int = 0                # CAMORIGN camera origins
     path: int = 0               # AVPPATH2 patrol paths
     waypoints: int = 0          # Alien WAYPOINT navigation volumes
+    morph: int = 0              # morph-target meshes imported (Stage 1d)
+    morph_skipped: int = 0      # morph targets whose parent is not placed
     lights: int = 0             # LIGHTSET lights
     anims: int = 0              # OBJTRAK2 level-track animations
     smooth: int = 0             # meshes smoothed by Auto Smooth

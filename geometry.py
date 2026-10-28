@@ -7,6 +7,13 @@ Turns the raw SHPRAWVT / SHPPOLYS / SHPUVCRD payloads of a ShapeGroup
 into a Blender mesh with materials, UVs and optional pivot centering.
 The bit layout of poly_colour is non-obvious - see bitmap_index_from_poly
 and uv_index_from_poly for the two decoders and their gotchas.
+
+UVs are stored as integer texel indices of the bitmap they belong to and
+the engine maps them as `(u + 0.5) / width`, `(v + 0.5) / height` with v
+measured from the top of the image (Kshape.c shifts the texel index into
+16.16 and d3d_render.cpp divides by the loaded image size). Blender's v
+axis points up, so the imported UVs are `1 - (v + 0.5) / height`; see
+uv_to_blender.
 """
 
 from __future__ import annotations
@@ -33,6 +40,14 @@ _STRUCT_POLY = struct.Struct("<iiIIiiii")
 _STRUCT_UV_F = struct.Struct("<ff")
 _STRUCT_UV_I = struct.Struct("<hh")
 _STRUCT_I    = struct.Struct("<i")
+
+# Fallback texture size when the bitmap cannot be resolved to a file. The
+# retail levels use 128x128 level textures almost exclusively.
+DEFAULT_TEX_SIZE = 128.0
+
+# PNG dimensions, keyed by absolute path; the same file is queried once
+# per build_mesh call for every polygon that uses it.
+_PNG_DIM_CACHE: dict[str, tuple[int, int] | None] = {}
 
 
 def extract_vertices(data: bytes):
@@ -65,7 +80,12 @@ def extract_polygons(data: bytes):
 
 
 def extract_uvs(data: bytes, int16_mode: bool = False):
-    """Parse a SHPUVCRD payload into a list of per-poly UV lists."""
+    """Parse a SHPUVCRD payload into a list of per-poly UV lists.
+
+    Values are returned in the texture's texel space (the engine treats
+    them as texel indices); `uv_to_blender` turns them into Blender UVs
+    once the texture they belong to is known.
+    """
     out = []
     pos = 4
     unpack_i = _STRUCT_I.unpack_from
@@ -80,13 +100,52 @@ def extract_uvs(data: bytes, int16_mode: bool = False):
             if pos + 8 > len(data):
                 return out
             a, b = unpack_uv(data, pos)
-            if int16_mode:
-                uvs.append((a / 256.0, b / 256.0))
-            else:
-                uvs.append((a, b))
+            uvs.append((a, b))
             pos += 8
         out.append(uvs)
     return out
+
+
+def uv_to_blender(u: float, v: float, width: float,
+                  height: float) -> tuple[float, float]:
+    """Convert one engine UV (texel index, v from top) to a Blender UV.
+
+    The engine draws the texel centres: `tu = (u + 0.5) / width` with
+    `tv` measured from the top of the image (Kshape.c shifts the index
+    into 16.16 and d3d_render.cpp divides by the loaded texture size).
+    Blender's v axis points up, hence the flip.
+    """
+    if width <= 0:
+        width = DEFAULT_TEX_SIZE
+    if height <= 0:
+        height = DEFAULT_TEX_SIZE
+    return ((u + 0.5) / width, 1.0 - (v + 0.5) / height)
+
+
+def png_dimensions(path: str) -> tuple[int, int] | None:
+    """Return (width, height) of a PNG file, or None when unreadable.
+
+    Reads the IHDR chunk directly so a texture's size is available
+    without loading the image or depending on Pillow: the UV scale of a
+    polygon is derived from the bitmap it uses, exactly like the game.
+    """
+    if not path:
+        return None
+    hit = _PNG_DIM_CACHE.get(path)
+    if hit is not None or path in _PNG_DIM_CACHE:
+        return hit
+    result: tuple[int, int] | None = None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+        if len(head) >= 24 and head[:8] == b"\x89PNG\r\n\x1a\n":
+            width, height = struct.unpack(">II", head[16:24])
+            if width and height:
+                result = (width, height)
+    except OSError:
+        result = None
+    _PNG_DIM_CACHE[path] = result
+    return result
 
 
 def bitmap_index_from_poly(poly_colour: int) -> int:
@@ -122,7 +181,7 @@ def is_identity_quat(q, eps: float = 1e-6) -> bool:
 
 
 def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
-               bm_mode, uv_scale, mat_cache,
+               bm_mode, mat_cache,
                transform=None, do_center=False, clrlookp_table=None,
                matchimg_index=None, uv_int16_mode=False,
                level_hint: str = "",
@@ -164,6 +223,7 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
         uv_idx = uv_index_from_poly(poly_colour)
 
         slot = 0
+        png = None
         if import_materials:
             entry = bitmaps.get(bmp_idx) if bitmaps else None
             tex_base = entry.name if entry is not None else None
@@ -219,7 +279,14 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
                 mat_objs.append(m)
             slot = mat_lookup[mat_name]
 
-        puv = uvs[uv_idx] if 0 <= uv_idx < len(uvs) else []
+        puv_raw = uvs[uv_idx] if 0 <= uv_idx < len(uvs) else []
+        # Scale belongs to the texture this polygon uses: the engine
+        # divides the texel index by the loaded image size, so a 256px
+        # bitmap is not stretched like a 128px one.
+        dims = png_dimensions(png) if png else None
+        tex_w = float(dims[0]) if dims else DEFAULT_TEX_SIZE
+        tex_h = float(dims[1]) if dims else DEFAULT_TEX_SIZE
+        puv = [uv_to_blender(u, v, tex_w, tex_h) for (u, v) in puv_raw]
 
         # Triangles stay as one face; quads become two triangles.
         if poly["num_verts"] == 3:
@@ -263,9 +330,7 @@ def build_mesh(shape: ShapeGroup, base, name, scale, bitmaps, tex_index,
                 u0, v0 = puv[0]
                 u1, v1 = puv[1]
                 u2, v2 = puv[2]
-                ext((u0 * uv_scale, v0 * uv_scale,
-                     u1 * uv_scale, v1 * uv_scale,
-                     u2 * uv_scale, v2 * uv_scale))
+                ext((u0, v0, u1, v1, u2, v2))
             else:
                 ext((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
         uv_layer.data.foreach_set("uv", flat_uvs)

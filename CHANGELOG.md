@@ -6,6 +6,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-26
+
+### Fixed
+
+- **UVs now match the game.** The RIF stores UVs as integer texel
+  indices of the bitmap a polygon uses, and the engine draws the texel
+  centres with v measured from the top of the image
+  (`Kshape.c` shifts the index into 16.16, `d3d_render.cpp` divides by
+  the loaded image size and adds half a texel). The importer used to
+  divide every UV by a fixed 128 and kept v unflipped, so textures were
+  mirrored vertically and 256px bitmaps were tiled at the wrong scale.
+  UVs are now converted per polygon with
+  `u = (u + 0.5) / width`, `v = 1 - (v + 0.5) / height` using the actual
+  size of the resolved texture (falling back to 128 when the bitmap has
+  no file); the fixed `/128` scale is gone.
+
+## [1.3.1] - 2026-10-20
+
+### Changed
+
+- **"Import Morph" lives in the Data section** next to the other
+  opt-in import types, and its meshes go into a dedicated
+  `<level>_Morphs` collection instead of the level geometry, so they
+  can be hidden or deleted in one click and never mix with the visible
+  mesh. The collection is only created when the option is on. Auto
+  Smooth now covers the morph collection too.
+
+## [1.3.0] - 2026-10-20
+
+### Added
+
+- **Morph target import** (`Data > Import Morph`, off by default).
+  A shape that morphs carries `SHPMORPH` next to its own geometry; its
+  `SUBSHAPE` children are the alternate meshes the game blends to
+  (doors, hatches, the xenoborg morph room). With the option on, each
+  target is imported as its own mesh placed with the parent shape's
+  transform, marked `avp_type = "morph"` with `avp_morph_parent` and
+  `avp_morph_index`, and it reuses the parent's materials. Off by
+  default because the game never draws these as objects of their own:
+  importing them adds hidden duplicates to every level. Targets whose
+  parent shape has no placement in the level are skipped and counted.
+
 ## [1.2.0] - 2026-10-11
 
 ### Changed
@@ -169,7 +211,10 @@ Initial public release.
   on mismatch (removed again in 1.1.0 - Blender owns extension
   versioning).
 
-[Unreleased]: https://github.com/AdiJager/BlendRIF/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/AdiJager/BlendRIF/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/AdiJager/BlendRIF/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/AdiJager/BlendRIF/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/AdiJager/BlendRIF/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/AdiJager/BlendRIF/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AdiJager/BlendRIF/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/AdiJager/BlendRIF/releases/tag/v1.0.0

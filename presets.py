@@ -1,4 +1,4 @@
-"""Import presets and their update callback.
+﻿"""Import presets and their update callback.
 
 PRESET_ITEMS is the EnumProperty item list; apply_preset is the update
 callback that rewrites every other operator property per preset.
@@ -48,6 +48,7 @@ def apply_preset(self, context):
         self.cull_backfaces = True
         self.diagnostics_mode = False
         self.mark_missing_ext = False
+        self.import_morph = False
         self.orphan_mode = "SKIP"
         self.pivot_mode = "ROTATED_ONLY"
         self.ext_rif_strategy = "auto"
@@ -71,6 +72,7 @@ def apply_preset(self, context):
         self.cull_backfaces = True    # irrelevant when materials off
         self.diagnostics_mode = False
         self.mark_missing_ext = False
+        self.import_morph = False
         self.orphan_mode = "SKIP"
         self.pivot_mode = "ROTATED_ONLY"
         self.ext_rif_strategy = "auto"
@@ -94,6 +96,7 @@ def apply_preset(self, context):
         self.cull_backfaces = False
         self.diagnostics_mode = False
         self.mark_missing_ext = True
+        self.import_morph = False
         self.orphan_mode = "ORIGIN"
         self.pivot_mode = "NONE"
         self.ext_rif_strategy = "auto"

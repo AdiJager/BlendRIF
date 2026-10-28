@@ -21,6 +21,17 @@ class Chunk:
     SHPUVCRD = "SHPUVCRD"
     SHPEXTFL = "SHPEXTFL"
 
+    # --- morph targets (parsers/shapes.py) -----------------------------
+    # A REBSHAPE may carry SHPMORPH next to its own geometry. It holds
+    # SUBSHAPE children - the "morph target" meshes the game blends to
+    # (doors, hatches) - plus a FRMMORPH frame list that refers to them.
+    # The targets are separate geometry and the game never draws them as
+    # objects of their own, so the importer skips them unless asked.
+    SHPMORPH = "SHPMORPH"
+    FRMMORPH = "FRMMORPH"
+    SUBSHAPE = "SUBSHAPE"
+    SUBSHPHD = "SUBSHPHD"
+
     # --- bitmaps / textures -------------------------------------------
     BMPLSTST = "BMPLSTST"
     BMPNAMES = "BMPNAMES"

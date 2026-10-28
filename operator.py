@@ -70,7 +70,9 @@ from .presets import PRESET_ITEMS, apply_preset
 from .operator_stats import ImportStats, ImportCounters
 from .operator_ui import draw_operator_panels
 from .summary import print_summary
-from .stages_geometry import run_stage_geometry, run_stage_char_hierarchy
+from .stages_geometry import (
+    run_stage_geometry, run_stage_char_hierarchy, run_stage_morph,
+)
 from .stages_markers import (
     run_stage_lights, run_stage_markers,
     StageLightsConfig, StageMarkersConfig,
@@ -81,10 +83,10 @@ from .stages_animation import (
 )
 
 
-# Legacy UV-related values. These were once user-visible operator
-# properties; they are now fixed constants so ImportContext keeps a
-# stable shape regardless of UI state.
-_UV_SCALE = 0.0078125    # /128
+# Legacy import flags. These were once user-visible operator properties;
+# they are now fixed constants so ImportContext keeps a stable shape
+# regardless of UI state. UV scale is no longer a constant: it is derived
+# per polygon from the size of the texture it uses (see geometry.py).
 _UV_INT16 = False        # always float
 _USE_ROTATION = True     # always apply rotation
 
@@ -153,6 +155,15 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
         subtype='ANGLE',
         description="Angle threshold for Auto Smooth. Faces whose angle between "
                     "neighbours exceeds this value keep a hard edge")
+    import_morph: bpy.props.BoolProperty(
+        name="Import Morph", default=False,
+        description="Import morph-target geometry (the SHPMORPH sub-shapes "
+                    "inside a shape) as extra meshes placed like their parent. "
+                    "Off by default: these are the blend targets the game uses "
+                    "for morphing doors and hatches, never drawn as objects on "
+                    "their own, so importing them adds hidden duplicates to the "
+                    "scene. Turn on when studying door animation or extracting "
+                    "the alternate states")
 
     # === Materials ======================================================
     import_materials: bpy.props.BoolProperty(
@@ -327,6 +338,7 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
         log.info(f"Backface Culling: "
                  f"{'ON' if self.cull_backfaces else 'OFF'}")
         log.info(f"Extract FFL: {'ON' if self.extract_ffl else 'OFF'}")
+        log.info(f"Import Morph: {'ON' if self.import_morph else 'OFF'}")
         log.info(f"Diagnostics: {'ON' if self.diagnostics_mode else 'OFF'}")
         log.info(f"Mark Missing SHPEXTFL: "
                  f"{'ON' if self.mark_missing_ext else 'OFF'}")
@@ -377,6 +389,8 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
         optional = {"missing_ext"} if self.mark_missing_ext else set()
         if self.import_waypoints:
             optional.add("waypoints")
+        if self.import_morph:
+            optional.add("morphs")
         cols = create_import_collections(base, enable_optional=optional)
         log.info(f"Created collection: {cols['__main__'].name}")
 
@@ -416,7 +430,7 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
         ctx = ImportContext(
             base=base, scale=self.scale,
             bmp_names=scan.bmp_names, tex_idx=tex_idx,
-            bm_mode=self.bitmap_mode, uv_scale=_UV_SCALE,
+            bm_mode=self.bitmap_mode,
             uv_int16_mode=_UV_INT16,
             mat_cache={}, matchimg_index=scan.matchimg_index,
             rif_index=rif_index, ext_cache={}, ext_stats=ext_stats,
@@ -459,12 +473,22 @@ class IMPORT_OT_avp_rif(bpy.types.Operator):
         if scan.char_bones:
             state["timings"]["Stage 1c CharHier"] = time.perf_counter() - t
 
-        if self.auto_smooth and stats.ok > 0:
+        if self.import_morph and scan.morph_groups:
+            t = time.perf_counter()
+            run_stage_morph(scan, ctx, counters, cols["morphs"])
+            state["timings"]["Stage 1d Morph"] = time.perf_counter() - t
+
+        if self.auto_smooth and (stats.ok > 0 or counters.morph > 0):
             log.info("")
             log.info(f"--- Stage 1b: Auto Smooth ({smooth_deg:.1f} deg) ---")
             t = time.perf_counter()
             counters.smooth = apply_auto_smooth(cols["geometry"],
                                                 self.auto_smooth_angle)
+            # Morph targets live in their own collection; smooth them too
+            # so they shade like the mesh they belong to.
+            if "morphs" in cols:
+                counters.smooth += apply_auto_smooth(cols["morphs"],
+                                                     self.auto_smooth_angle)
             state["timings"]["Stage 1b AutoSmooth"] = time.perf_counter() - t
             log.info(f"Applied Auto Smooth to {counters.smooth} mesh(es)")
 

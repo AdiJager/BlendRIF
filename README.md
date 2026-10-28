@@ -19,8 +19,10 @@ Blender scene. Materials are set up for Eevee by default.
   fans.
 - **Character animations** — rigged armatures with per-sequence NLA
   tracks.
-- **Level data** — spawn points, camera origins, AI paths, sound
-  emitters, and other markers.
+- **Level data** — spawn points, camera origins, AI paths, waypoints,
+  sound emitters, and other markers.
+- **Morph targets** — optional (off by default) import of the alternate
+  geometry the game blends morphing doors and hatches to.
 
 ---
 
@@ -129,17 +131,23 @@ levels) stay distinct; materials are named after that path
 summary reports how many references resolved by path, by a unique file
 name, ambiguously, or not at all.
 
-**Data** — one toggle per marker type: attachment points, placed-
+**Data** — one toggle per data type: attachment points, placed-
 object hierarchy, dynamic spawn points, sound emitters, player
-starts, camera origins, AI patrol paths, and lights. A patrol path is
-imported as a curve through the world positions of the AI modules it
-names (a path is a list of modules, not of coordinates), with the
-module indices and point flags kept as `avp_*` properties.
+starts, camera origins, AI patrol paths, waypoints, morph targets and
+lights. A patrol path is imported as a curve through the world
+positions of the AI modules it names (a path is a list of modules,
+not of coordinates), with the module indices and point flags kept as
+`avp_*` properties.
 **Import Waypoints** is off by default: it adds the Alien AI
 navigation volumes of a level, one cube empty per volume, sized to
 the volume and carrying its links to neighbouring volumes as
 `avp_wp_link_*` properties. A level holds hundreds of them, so they
 are opt-in.
+**Import Morph** is off by default too: it adds the morph-target
+geometry of shapes that morph (doors, hatches, the xenoborg room),
+placed like the parent shape and grouped in a dedicated
+`<level>_Morphs` collection so they stay apart from the level
+geometry.
 
 **Animation**
 - **Animate Level Tracks** — animated objects as NLA strips.
